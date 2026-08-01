@@ -1,0 +1,67 @@
+name: post-word-of-day
+
+on:
+  schedule:
+    - cron: '15 12 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Post word and advance state
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -e
+          NEXT_INDEX=$(jq -r '.nextIndex' state.json)
+          TOTAL=$(jq 'length' words.json)
+          TODAY=$(date -u -d '+9 hours' +'%Y-%m-%d')
+          LAST_DATE=$(jq -r '.lastPostedDate // ""' state.json)
+
+          if [ "$LAST_DATE" = "$TODAY" ]; then
+            echo "Already posted today; skipping."
+            exit 0
+          fi
+
+          if [ "$NEXT_INDEX" -ge "$TOTAL" ]; then
+            curl -s -X POST -H "Content-Type: application/json" \
+              -d '{"content":"⚠️ 【一日一語】語彙ストックが尽きました。Claudeに追加分の作成を依頼してください。"}' \
+              "$WEBHOOK_URL"
+            exit 0
+          fi
+
+          WORD=$(jq -r ".[$NEXT_INDEX].word" words.json)
+          READING=$(jq -r ".[$NEXT_INDEX].reading" words.json)
+          MEANING=$(jq -r ".[$NEXT_INDEX].meaning" words.json)
+          EXAMPLE=$(jq -r ".[$NEXT_INDEX].example" words.json)
+          SOURCE=$(jq -r ".[$NEXT_INDEX].source" words.json)
+          REMAINING=$((TOTAL - NEXT_INDEX - 1))
+
+          BODY="【${WORD}（${READING}）】${MEANING}【例】${EXAMPLE}※${SOURCE}より"
+          if [ "$REMAINING" -le 5 ]; then
+            BODY="${BODY}"$'\n\n'"⚠️ 語彙ストック残り ${REMAINING} 件です。そろそろ追加分の作成をClaudeに依頼してください。"
+          fi
+
+          PAYLOAD=$(jq -n --arg c "$BODY" '{content: $c}')
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL")
+          echo "POST status: $STATUS"
+
+          if [ "$STATUS" = "204" ]; then
+            NEW_INDEX=$((NEXT_INDEX + 1))
+            jq --argjson n "$NEW_INDEX" --arg d "$TODAY" '.nextIndex = $n | .lastPostedDate = $d' state.json > state.json.tmp
+            mv state.json.tmp state.json
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "post word index $NEXT_INDEX"
+            git push
+          else
+            echo "Post failed; state not updated."
+            exit 1
+          fi
