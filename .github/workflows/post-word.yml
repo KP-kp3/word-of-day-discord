@@ -17,6 +17,7 @@ jobs:
       - name: Post word and advance state
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ADMIN_WEBHOOK_URL: ${{ secrets.ADMIN_WEBHOOK_URL }}
         run: |
           set -e
           NEXT_INDEX=$(jq -r '.nextIndex' state.json)
@@ -32,7 +33,7 @@ jobs:
           if [ "$NEXT_INDEX" -ge "$TOTAL" ]; then
             curl -s -X POST -H "Content-Type: application/json" \
               -d '{"content":"⚠️ 【一日一語】語彙ストックが尽きました。Claudeに追加分の作成を依頼してください。"}' \
-              "$WEBHOOK_URL"
+              "$ADMIN_WEBHOOK_URL"
             exit 0
           fi
 
@@ -44,15 +45,15 @@ jobs:
           REMAINING=$((TOTAL - NEXT_INDEX - 1))
 
           BODY="【${WORD}（${READING}）】${MEANING}【例】${EXAMPLE}※${SOURCE}より"
-          if [ "$REMAINING" -le 5 ]; then
-            BODY="${BODY}"$'\n\n'"⚠️ 語彙ストック残り ${REMAINING} 件です。そろそろ追加分の作成をClaudeに依頼してください。"
-          fi
-
           PAYLOAD=$(jq -n --arg c "$BODY" '{content: $c}')
           STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL")
           echo "POST status: $STATUS"
 
           if [ "$STATUS" = "204" ]; then
+            if [ "$REMAINING" -le 5 ]; then
+              WARN_PAYLOAD=$(jq -n --arg c "⚠️ 【一日一語】語彙ストック残り ${REMAINING} 件です。そろそろ追加分の作成をClaudeに依頼してください。" '{content: $c}')
+              curl -s -o /dev/null -X POST -H "Content-Type: application/json" -d "$WARN_PAYLOAD" "$ADMIN_WEBHOOK_URL"
+            fi
             NEW_INDEX=$((NEXT_INDEX + 1))
             jq --argjson n "$NEW_INDEX" --arg d "$TODAY" '.nextIndex = $n | .lastPostedDate = $d' state.json > state.json.tmp
             mv state.json.tmp state.json
